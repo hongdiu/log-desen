@@ -28,10 +28,15 @@ jobs:
         with:
           python-version: "3.8"
       - run: python -m pip install -r requirements.txt
+      - name: Verify module import works
+        shell: pwsh
+        run: python -c "from log_desensitizer.gui import LogDesensitizerApp; print('import OK')"
       - name: Build exe
-        # 用 -m 模块入口（而非文件路径入口），保证 __main__.py 作为包成员执行，
-        # 避免 "attempted relative import with no known parent package"。
-        run: pyinstaller --onefile --windowed --name log-desensitizer --collect-all log_desensitizer --paths . -m log_desensitizer
+        shell: pwsh
+        # __main__.py 已做兼容处理，这里走 script 入口更简单稳健（PyInstaller 各版本都支持）。
+        # --paths . 确保 log_desensitizer 包可被搜索到；__main__.py 内部在 relative import 失败
+        # 时会自动退化为绝对导入，因此 "No known parent package" 场景也能正常启动。
+        run: pyinstaller --noconfirm --onefile --windowed --name log-desensitizer --collect-all log_desensitizer --paths . log_desensitizer\__main__.py
       - uses: actions/upload-artifact@v4
         with:
           name: log-desensitizer-windows
