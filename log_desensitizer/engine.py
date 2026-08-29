@@ -35,6 +35,8 @@ class Rule:
     - id         规则标识（用于命中清单与替换占位）
     - pattern    正则表达式
     - replace_group 大于 0 时只脱敏该捕获组（其余部分原样保留），0 表示整体脱敏
+    - field_group  大于 0 时该捕获组作为「字段标识」用于确认脱敏去重（如 ch_name
+                   的 key 名 userName），0 表示不参与字段确认（整体脱敏规则照常脱敏）
     - validator  命中后可选校验（如 Luhn、身份证校验位），返回 False 则不脱敏、保留原值
     - strategy   单规则专属策略，None 时用引擎全局策略
     """
@@ -43,6 +45,7 @@ class Rule:
     pattern: str
     enabled: bool = True
     replace_group: int = 0
+    field_group: int = 0
     validator: Optional[Callable[[str], bool]] = None
     strategy: Optional[Strategy] = None
     _compiled: Optional["re.Pattern"] = field(default=None, repr=False)
@@ -110,9 +113,13 @@ class Engine:
 
         多条规则按顺序依次作用于上一步结果。每条规则内通过 finditer
         重建文本，仅替换通过 validator 的匹配，避免误报。
+        候选规则（field_group>0，如 ch_name）不参与自动脱敏，只用于
+        「确认后脱敏」模式，避免误报破坏原文。
         """
         hits = {r.id: 0 for r in self.rules}
         for r in self.rules:
+            if r.field_group and r.field_group > 0:
+                continue
             pat = r.compile()
             strat = self._rule_strategy(r)
             out_parts: List[str] = []
@@ -218,6 +225,9 @@ class Engine:
         """
         hits = {r.id: 0 for r in self.rules}
         for r in self.rules:
+            # 候选规则不参与自动扫描统计（只用于确认脱敏）
+            if r.field_group and r.field_group > 0:
+                continue
             pat = r.compile()
             count = 0
             for m in pat.finditer(text):
@@ -263,8 +273,12 @@ class Engine:
     def _field_key(self, r: Rule, m) -> str:
         """从匹配中提取归一化字段标识（去空白）。
 
-        replace_group>0 时取值之前的原文片段（如 user=），整体脱敏规则用规则名。
+        field_group>0 时取该捕获组作为字段标识（如 ch_name 的 key 名 userName）；
+        否则 replace_group>0 时取值之前的原文片段（如 user=）；
+        整体脱敏规则用规则名。
         """
+        if r.field_group and r.field_group <= m.re.groups:
+            return re.sub(r"\s", "", m.group(r.field_group))
         if r.replace_group and r.replace_group <= m.re.groups:
             g = r.replace_group
             prefix = m.group(0)[: m.start(g) - m.start(0)]
@@ -274,6 +288,8 @@ class Engine:
 
     def _field_label(self, r: Rule, m) -> str:
         """展示用字段标签（保留原样分隔符）。"""
+        if r.field_group and r.field_group <= m.re.groups:
+            return m.group(r.field_group)
         if r.replace_group and r.replace_group <= m.re.groups:
             g = r.replace_group
             return m.group(0)[: m.start(g) - m.start(0)].strip()
@@ -299,9 +315,10 @@ class Engine:
                                  errors="replace", newline="") as fin:
             for line in fin:
                 for r in self.rules:
-                    # 整体脱敏规则（replace_group=0，如 phone/idcard）不参与
-                    # 字段确认：它们无字段概念、误报率低，照常脱敏即可。
-                    if not (r.replace_group and r.replace_group > 0):
+                    # 仅 field_group>0 的规则参与字段确认（如 ch_name 动态
+                    # 提取 key 名）。其他规则（phone/idcard/secret_kv 等）
+                    # 无需确认、误报率低，照常自动脱敏。
+                    if not (r.field_group and r.field_group > 0):
                         continue
                     pat = r.compile()
                     for m in pat.finditer(line):
@@ -394,10 +411,10 @@ class Engine:
             count = 0
             for m in pat.finditer(text):
                 start, end = m.start(), m.end()
-                # 字段确认：仅对有字段的规则（replace_group>0）生效；
-                # 整体脱敏规则（phone/idcard 等）无字段概念，照常脱敏。
+                # 字段确认：仅对 field_group>0 的规则（如 ch_name）生效；
+                # 其他规则（phone/idcard/secret_kv 等）无字段概念，照常脱敏。
                 if (confirmed_field_keys is not None
-                        and r.replace_group and r.replace_group <= m.re.groups):
+                        and r.field_group and r.field_group <= m.re.groups):
                     fkey = self._field_key(r, m)
                     if fkey not in confirmed_field_keys:
                         continue

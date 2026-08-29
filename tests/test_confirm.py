@@ -27,23 +27,23 @@ def sample_log(tmp_path):
 
 
 def test_scan_field_candidates_groups_by_field(sample_log):
-    """扫描应按字段去重：user=、联系人:、报障人= 各一条候选。"""
+    """扫描应按 key 去重：user、联系人、报障人 各一条候选。"""
     eng = Engine(builtin_rules())
     cands = eng.scan_field_candidates(sample_log)
 
     ch_cands = [c for c in cands if c.rule_id == "ch_name"]
-    assert len(ch_cands) >= 3, "应至少有 user=/联系人:/报障人= 三条字段候选"
+    assert len(ch_cands) >= 3, "应至少有 user/联系人/报障人 三条字段候选"
 
     fields = {c.field_label for c in ch_cands}
-    assert "user=" in fields
-    assert "联系人:" in fields
-    assert "报障人=" in fields
+    assert "user" in fields
+    assert "联系人" in fields
+    assert "报障人" in fields
 
-    # user= 字段应命中 3 次（张三、李四、王五）
-    user_cand = next(c for c in ch_cands if c.field_label == "user=")
+    # user 字段应命中 3 次（张三、李四、王五）
+    user_cand = next(c for c in ch_cands if c.field_label == "user")
     assert user_cand.count == 3
-    # 报障人= 字段应命中 2 次（北京、上海）
-    bao_cand = next(c for c in ch_cands if c.field_label == "报障人=")
+    # 报障人 字段应命中 2 次（北京、上海）
+    bao_cand = next(c for c in ch_cands if c.field_label == "报障人")
     assert bao_cand.count == 2
     # 候选应含日志原文样本
     assert len(user_cand.samples) >= 1
@@ -57,16 +57,51 @@ def test_scan_field_candidate_is_field_candidate_type(sample_log):
     assert all(isinstance(c, FieldCandidate) for c in cands)
 
 
+def test_dynamic_field_forms(tmp_path):
+    """动态扫描应覆盖各种 key 分隔符形式（形式不限）。"""
+    lines = [
+        "userName: '张三' done\n",
+        "user=张三 done\n",
+        "userName='李四' done\n",
+        'name="王五" done\n',
+        "联系人：赵六 done\n",
+    ]
+    p = tmp_path / "forms.log"
+    p.write_text("".join(lines), encoding="utf-8")
+    eng = Engine(builtin_rules())
+    cands = eng.scan_field_candidates(str(p))
+    ch_cands = [c for c in cands if c.rule_id == "ch_name"]
+    fields = {c.field_label for c in ch_cands}
+    # 各种形式的 key 都应被提取
+    assert "userName" in fields
+    assert "user" in fields
+    assert "name" in fields
+    assert "联系人" in fields
+    # userName 应命中 2 次（'张三' 和 '李四'）
+    un_cand = next(c for c in ch_cands if c.field_label == "userName")
+    assert un_cand.count == 2
+
+
+def test_ch_name_not_in_auto_mask(tmp_path):
+    """ch_name 是候选规则，不应参与一键脱敏（mask_text），避免误报。"""
+    eng = Engine(builtin_rules())
+    # proj=内部项目代号 不应被 ch_name 自动脱敏
+    text, hits = eng.mask_text("proj=内部项目代号 done")
+    assert "proj=内部项目代号" in text  # 原文保留
+    # ch_name 不在自动脱敏命中
+    assert not any(h.rule_id == "ch_name" for h in hits)
+
+
 def test_mask_with_fields_partial_confirm(sample_log, tmp_path):
-    """确认 user= 和 联系人:，不确认 报障人=。报障人保留原值。"""
+    """确认 user 和 联系人，不确认 报障人。报障人保留原值。"""
     eng = Engine(builtin_rules())
     cands = eng.scan_field_candidates(sample_log)
-    # 只确认 user= 和 联系人: 的 field_key
+    # 只确认 user 和 联系人 的 field_key
     confirmed = set()
     for c in cands:
-        if c.rule_id == "ch_name" and c.field_label in ("user=", "联系人:"):
+        if c.rule_id == "ch_name" and c.field_label in ("user", "联系人"):
             confirmed.add(c.field_key)
-    assert confirmed, "应能找到 user= 和 联系人: 的 field_key"
+    assert confirmed, "应能找到 user 和 联系人 的 field_key"
 
     out = str(tmp_path / "out.log")
     eng.mask_with_fields(sample_log, out, confirmed)
