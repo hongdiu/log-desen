@@ -80,3 +80,33 @@ def test_mask_file(tmp_path):
     content = out.read_text(encoding="utf-8")
     assert "138****5678" in content
     assert any(x.rule_id == "phone" for x in hits)
+
+
+def test_custom_replacements():
+    eng = Engine(builtin_rules(),
+                 custom_replacements=[("CompanyX", "CompanyA"),
+                                      ("内部项目代号", "***")])
+    t, h = eng.mask_text("client=CompanyX proj=内部项目代号")
+    assert "CompanyX" not in t
+    assert "内部项目代号" not in t
+    assert "CompanyA" in t
+    assert any(x.rule_id == "custom_replace" and x.count == 2 for x in h)
+
+
+def test_scan_includes_custom_replace():
+    eng = Engine(builtin_rules(),
+                 custom_replacements=[("secret_word", "***")])
+    hits = eng.scan_text("here is secret_word and secret_word again")
+    assert any(x.rule_id == "custom_replace" and x.count == 2 for x in hits)
+
+
+def test_progress_callback(tmp_path):
+    src = tmp_path / "a.log"
+    out = tmp_path / "a.masked.log"
+    src.write_text("a" * 100 + "\nb" * 100 + "\n", encoding="utf-8")
+    seen = []
+    _eng().mask_file(str(src), str(out),
+                     on_progress=lambda c, t: seen.append((c, t)))
+    assert seen, "progress callback should be invoked"
+    assert seen[-1][1] > 0
+    assert seen[-1][0] == seen[-1][1]  # 末尾 done==total

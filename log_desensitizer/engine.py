@@ -10,6 +10,17 @@ from typing import Callable, List, Optional, Tuple
 
 from .strategies import DEFAULT_STRATEGY, Strategy
 
+# 进度回调签名：(current, total)
+ProgressCb = Callable[[int, int], None]
+
+
+def _safe_size(path: str) -> int:
+    """安全获取文件大小，失败返回 0。"""
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return 0
+
 
 @dataclass
 class Rule:
@@ -55,9 +66,15 @@ class Engine:
         masked, hits = eng.mask_text("联系 13812345678")
     """
 
-    def __init__(self, rules: List[Rule], strategy: Optional[Strategy] = None):
+    def __init__(
+        self,
+        rules: List[Rule],
+        strategy: Optional[Strategy] = None,
+        custom_replacements: Optional[List[Tuple[str, str]]] = None,
+    ):
         self.rules = [r for r in rules if r.enabled]
         self.default_strategy = strategy or DEFAULT_STRATEGY
+        self.custom_replacements = custom_replacements or []
         for r in self.rules:
             r.compile()
 
@@ -104,6 +121,14 @@ class Engine:
             if count:
                 text = "".join(out_parts)
                 hits[r.id] = count
+        # 自定义字符串全局替换（在所有正则规则之后）
+        for old, new in self.custom_replacements:
+            if not old:
+                continue
+            n = text.count(old)
+            if n:
+                text = text.replace(old, new)
+                hits["custom_replace"] = hits.get("custom_replace", 0) + n
         return text, [Hit(k, v) for k, v in hits.items() if v > 0]
 
     def mask_file(
@@ -111,12 +136,16 @@ class Engine:
         in_path: str,
         out_path: str,
         encoding: str = "utf-8",
+        on_progress: Optional[ProgressCb] = None,
     ) -> List[Hit]:
         """按行处理文件脱敏，避免大文件一次性读入内存。
 
         errors="replace" 容忍非法字节，避免中断。
+        on_progress(done_bytes, total_bytes) 用于进度反馈。
         """
         total: dict = {}
+        total_bytes = _safe_size(in_path)
+        done = 0
         with open(in_path, "r", encoding=encoding, errors="replace") as fin, \
                 open(out_path, "w", encoding=encoding, newline="") as fout:
             for line in fin:
@@ -124,6 +153,11 @@ class Engine:
                 fout.write(masked)
                 for h in hits:
                     total[h.rule_id] = total.get(h.rule_id, 0) + h.count
+                done += len(line.encode(encoding, errors="replace"))
+                if on_progress is not None and total_bytes > 0:
+                    on_progress(done, total_bytes)
+        if on_progress is not None and total_bytes > 0:
+            on_progress(total_bytes, total_bytes)
         return [Hit(k, v) for k, v in total.items()]
 
     def mask_dir(
@@ -131,15 +165,23 @@ class Engine:
         in_dir: str,
         out_dir: str,
         encoding: str = "utf-8",
+        on_progress: Optional[ProgressCb] = None,
     ) -> dict:
-        """批量处理目录下所有文件（不递归子目录）。"""
+        """批量处理目录下所有文件（不递归子目录）。
+
+        on_progress(done_files, total_files) 按文件数反馈进度。
+        """
         os.makedirs(out_dir, exist_ok=True)
+        names = [n for n in os.listdir(in_dir)
+                 if os.path.isfile(os.path.join(in_dir, n))]
         results: dict = {}
-        for name in os.listdir(in_dir):
+        total = len(names)
+        for i, name in enumerate(names, 1):
             ip = os.path.join(in_dir, name)
-            if os.path.isfile(ip):
-                op = os.path.join(out_dir, name)
-                results[name] = self.mask_file(ip, op, encoding)
+            op = os.path.join(out_dir, name)
+            results[name] = self.mask_file(ip, op, encoding)
+            if on_progress is not None and total > 0:
+                on_progress(i, total)
         return results
 
     def scan_text(self, text: str) -> List[Hit]:
@@ -160,13 +202,28 @@ class Engine:
                 count += 1
             if count:
                 hits[r.id] = count
+        # 自定义字符串替换命中也统计到扫描结果
+        for old, _ in self.custom_replacements:
+            if not old:
+                continue
+            n = text.count(old)
+            if n:
+                hits["custom_replace"] = hits.get("custom_replace", 0) + n
         return [Hit(k, v) for k, v in hits.items() if v > 0]
 
-    def scan_file(self, in_path: str, encoding: str = "utf-8") -> List[Hit]:
+    def scan_file(self, in_path: str, encoding: str = "utf-8",
+                  on_progress: Optional[ProgressCb] = None) -> List[Hit]:
         """扫描文件敏感信息命中统计（按行，不写入、不替换）。"""
         total: dict = {}
+        total_bytes = _safe_size(in_path)
+        done = 0
         with open(in_path, "r", encoding=encoding, errors="replace") as fin:
             for line in fin:
                 for h in self.scan_text(line):
                     total[h.rule_id] = total.get(h.rule_id, 0) + h.count
+                done += len(line.encode(encoding, errors="replace"))
+                if on_progress is not None and total_bytes > 0:
+                    on_progress(done, total_bytes)
+        if on_progress is not None and total_bytes > 0:
+            on_progress(total_bytes, total_bytes)
         return [Hit(k, v) for k, v in total.items()]

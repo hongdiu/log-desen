@@ -24,6 +24,50 @@ def _build_strategy(choice: str):
     return MaskStrategy()
 
 
+_RULE_HELP_TEXT = """自定义规则 JSON 格式说明
+
+文件内容为 JSON 数组，每个元素是一条规则。
+
+字段：
+  id            规则标识（必填），用于命中清单显示与替换占位。
+                例如 "myorder"、"internal_token"。
+  pattern       正则表达式字符串（必填），用于匹配敏感内容。
+                注意 JSON 字符串里的反斜杠需双写，如 \\d 写成 \\\\d。
+  replace_group 整数（可选，默认 0）。
+                0  = 整体脱敏（整个匹配替换掉）；
+                >0 = 只脱敏该捕获组的值，其余部分原样保留。
+                例如 (mysql)://user:(password)@host 想只脱敏密码，
+                可把密码用括号包起来并设 replace_group=1。
+  enabled       布尔（可选，默认 true）。是否启用此规则。
+
+示例：
+[
+  {
+    "id": "my_order",
+    "pattern": "ORD\\\\d{10}",
+    "replace_group": 0
+  },
+  {
+    "id": "my_token",
+    "pattern": "CT-[A-Za-z0-9]{20}"
+  },
+  {
+    "id": "conn_pwd",
+    "pattern": "(oracle|sqlserver)://[^:@]+:([^@]+)@",
+    "replace_group": 2,
+    "enabled": true
+  }
+]
+
+说明：
+- 自定义规则会追加到内置规则之后执行。
+- 命中后按当前选择的脱敏策略（掩码/Hash/彻底替换）处理。
+- 自定义规则默认启用，无需在内置规则勾选区勾选。
+- 字符串替换功能（GUI 上方"字符串替换"区）与正则规则相互独立，
+  字符串替换在所有正则规则之后整体替换，适合精确关键词/敏感词替换。
+"""
+
+
 class LogDesensitizerApp(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -127,9 +171,33 @@ class LogDesensitizerApp(tk.Tk):
         ttk.Label(custom_frame, text="自定义规则(JSON，可选)：").pack(side="left")
         ttk.Button(custom_frame, text="选择规则文件",
                    command=self._pick_custom).pack(side="left", padx=(8, 0))
+        ttk.Button(custom_frame, text="格式说明",
+                   command=self._show_rule_help).pack(side="left", padx=(8, 0))
         self.custom_label = ttk.Label(custom_frame, text="无",
                                       style="Muted.TLabel")
         self.custom_label.pack(side="left", padx=12)
+
+        # 自定义字符串全局替换：用户指定"查找→替换为"对
+        repl_frame = ttk.Frame(self._inner)
+        repl_frame.pack(fill="x", padx=16, pady=8)
+        ttk.Label(repl_frame, text="字符串替换：").pack(side="left")
+        ttk.Label(repl_frame, text="查找", style="Muted.TLabel").pack(
+            side="left", padx=(8, 4))
+        self.repl_find_var = tk.StringVar()
+        ttk.Entry(repl_frame, textvariable=self.repl_find_var,
+                  width=18).pack(side="left")
+        ttk.Label(repl_frame, text="→", style="Muted.TLabel").pack(
+            side="left", padx=(6, 4))
+        self.repl_to_var = tk.StringVar()
+        ttk.Entry(repl_frame, textvariable=self.repl_to_var,
+                  width=18).pack(side="left")
+        ttk.Button(repl_frame, text="添加",
+                   command=self._add_replacement).pack(side="left", padx=(8, 0))
+        self.repl_list = tk.Listbox(repl_frame, height=3,
+                                   font=("Microsoft YaHei", 10))
+        self.repl_list.pack(side="left", fill="x", expand=True, padx=(8, 0))
+        ttk.Button(repl_frame, text="删除",
+                   command=self._del_replacement).pack(side="left", padx=(6, 0))
 
         ttk.Label(self._inner, text="内置规则（可勾选/取消）：").pack(
             anchor="w", padx=16, pady=(8, 4))
@@ -169,7 +237,11 @@ class LogDesensitizerApp(tk.Tk):
 
         self.status_var = tk.StringVar(value="就绪")
         ttk.Label(self._inner, textvariable=self.status_var,
-                  style="Muted.TLabel").pack(anchor="w", padx=16, pady=(0, 12))
+                  style="Muted.TLabel").pack(anchor="w", padx=16, pady=(8, 2))
+        # 进度条：扫描/脱敏时按字节或文件数反馈进度
+        self.progress = ttk.Progressbar(self._inner, orient="horizontal",
+                                        mode="determinate", length=400)
+        self.progress.pack(fill="x", padx=16, pady=(0, 12))
 
     def _on_wheel(self, event):
         delta = -1 if event.delta > 0 else 1
@@ -203,6 +275,45 @@ class LogDesensitizerApp(tk.Tk):
             self.custom_path = p
             self.custom_label.config(text=os.path.basename(p))
 
+    def _show_rule_help(self):
+        """自定义规则 JSON 格式说明弹窗。"""
+        win = tk.Toplevel(self)
+        win.title("自定义规则 JSON 格式说明")
+        win.geometry("680x520")
+        win.transient(self)
+        txt = tk.Text(win, wrap="word", font=("Microsoft YaHei", 10),
+                      padx=16, pady=16)
+        txt.pack(fill="both", expand=True)
+        sb = ttk.Scrollbar(win, command=txt.yview)
+        sb.pack(side="right", fill="y")
+        txt.configure(yscrollcommand=sb.set)
+        txt.insert("1.0", _RULE_HELP_TEXT)
+        txt.configure(state="disabled")
+
+    def _add_replacement(self):
+        find = self.repl_find_var.get()
+        to = self.repl_to_var.get()
+        if not find:
+            messagebox.showinfo("提示", "请输入要查找的字符串")
+            return
+        self.repl_list.insert("end", "{0}  →  {1}".format(find, to))
+        self.repl_find_var.set("")
+        self.repl_to_var.set("")
+
+    def _del_replacement(self):
+        for idx in self.repl_list.curselection():
+            self.repl_list.delete(idx)
+
+    def _get_replacements(self):
+        items = self.repl_list.get(0, "end")
+        pairs = []
+        for it in items:
+            if "→" not in it:
+                continue
+            left, right = it.split("→", 1)
+            pairs.append((left.strip(), right.strip()))
+        return pairs
+
     def _engine(self) -> Engine:
         rules = all_rules(self.custom_path) if self.custom_path else builtin_rules()
         enabled = []
@@ -212,10 +323,22 @@ class LogDesensitizerApp(tk.Tk):
                 enabled.append(r)
             elif v.get():          # 内置规则按勾选
                 enabled.append(r)
-        return Engine(enabled, _build_strategy(self.strategy_var.get()))
+        return Engine(enabled, _build_strategy(self.strategy_var.get()),
+                      custom_replacements=self._get_replacements())
+
+    def _set_progress(self, cur, total):
+        """工作线程通过 after 调用，更新进度条与状态文本。"""
+        if total <= 0:
+            return
+        pct = int(cur * 100 / total)
+        if pct > 100:
+            pct = 100
+        self.progress["value"] = pct
+        self.status_var.set("处理中… {0}/{1}  ({2}%)".format(cur, total, pct))
 
     def _run_async(self, task, done_msg: str = "完成"):
         self.status_var.set("处理中…")
+        self.progress["value"] = 0
 
         def worker():
             try:
@@ -224,6 +347,7 @@ class LogDesensitizerApp(tk.Tk):
                 self.after(0, lambda: messagebox.showerror("出错", str(e)))
                 self.after(0, lambda: self.status_var.set("出错"))
                 return
+            self.after(0, lambda: self.progress.configure(value=100))
             self.after(0, lambda: self.status_var.set(done_msg))
 
         threading.Thread(target=worker, daemon=True).start()
@@ -238,14 +362,19 @@ class LogDesensitizerApp(tk.Tk):
 
         def task():
             if ptype == "file":
-                hits = eng.scan_file(path)
+                hits = eng.scan_file(
+                    path, on_progress=lambda c, t: self.after(
+                        0, lambda c=c, t=t: self._set_progress(c, t)))
             else:
                 agg = {}
-                for name in os.listdir(path):
+                files = [n for n in os.listdir(path)
+                         if os.path.isfile(os.path.join(path, n))]
+                total = len(files)
+                for i, name in enumerate(files, 1):
                     fp = os.path.join(path, name)
-                    if os.path.isfile(fp):
-                        for h in eng.scan_file(fp):
-                            agg[h.rule_id] = agg.get(h.rule_id, 0) + h.count
+                    for h in eng.scan_file(fp):
+                        agg[h.rule_id] = agg.get(h.rule_id, 0) + h.count
+                    self.after(0, lambda i=i, t=total: self._set_progress(i, t))
                 hits = [Hit(k, v) for k, v in agg.items()]
             self.after(0, lambda: self._show_hits(hits))
 
@@ -263,10 +392,16 @@ class LogDesensitizerApp(tk.Tk):
             if ptype == "file":
                 base, ext = os.path.splitext(path)
                 out = base + ".masked" + ext
-                hits = eng.mask_file(path, out)
+                hits = eng.mask_file(
+                    path, out,
+                    on_progress=lambda c, t: self.after(
+                        0, lambda c=c, t=t: self._set_progress(c, t)))
             else:
                 out = os.path.join(path, "desensitized")
-                res = eng.mask_dir(path, out)
+                res = eng.mask_dir(
+                    path, out,
+                    on_progress=lambda c, t: self.after(
+                        0, lambda c=c, t=t: self._set_progress(c, t)))
                 agg = {}
                 for fhits in res.values():
                     for h in fhits:
