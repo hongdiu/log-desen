@@ -1,0 +1,37 @@
+name: build
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.8"
+      - run: python -m pip install -r requirements.txt
+      - run: python -m pytest tests/ -v
+
+  # 在 Windows runner 上用 Python 3.8 + PyInstaller 打包单 exe，
+  # 产物兼容 win7 SP1（需目标机有 VC++ 2015-2019 运行时）。
+  build-windows:
+    runs-on: windows-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.8"
+      - run: python -m pip install -r requirements.txt
+      - name: Build exe
+        run: pyinstaller --onefile --windowed --name log-desensitizer --collect-all log_desensitizer log_desensitizer/__main__.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: log-desensitizer-windows
+          path: dist/log-desensitizer.exe
+          if-no-files-found: error
