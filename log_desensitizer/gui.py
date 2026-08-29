@@ -75,20 +75,46 @@ class LogDesensitizerApp(tk.Tk):
 
     # ---------- 布局 ----------
     def _build_ui(self):
-        ttk.Label(self, text="日志脱敏工具", style="Title.TLabel").pack(
-            anchor="w", padx=16, pady=(16, 0))
-        ttk.Label(self, text="选择日志文件，一键脱敏后安全发给厂商",
+        # 整体可滚动容器：窗口比屏幕短时，所有内容都能上下滚
+        bg = "#F7F7F8"
+        self._canvas = tk.Canvas(self, bg=bg, highlightthickness=0,
+                                 borderwidth=0)
+        vsb = ttk.Scrollbar(self, orient="vertical",
+                            command=self._canvas.yview)
+        self._canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        self._canvas.pack(side="left", fill="both", expand=True)
+
+        self._inner = ttk.Frame(self._canvas, style="TFrame")
+        self._inner_id = self._canvas.create_window(
+            (0, 0), window=self._inner, anchor="nw")
+        self._inner.bind(
+            "<Configure>",
+            lambda e: self._canvas.configure(
+                scrollregion=self._canvas.bbox("all")))
+        self._canvas.bind(
+            "<Configure>",
+            lambda e: self._canvas.itemconfig(
+                self._inner_id, width=e.width))
+        # 鼠标滚轮（Windows 用 Button-4/5）
+        self._canvas.bind("<Enter>", self._bind_wheel)
+        self._canvas.bind("<Leave>", self._unbind_wheel)
+
+        ttk.Label(self._inner, text="日志脱敏工具",
+                  style="Title.TLabel").pack(anchor="w", padx=16, pady=(16, 0))
+        ttk.Label(self._inner, text="选择日志文件，一键脱敏后安全发给厂商",
                   style="Muted.TLabel").pack(anchor="w", padx=16, pady=(0, 10))
 
-        file_frame = ttk.Frame(self)
+        file_frame = ttk.Frame(self._inner)
         file_frame.pack(fill="x", padx=16, pady=8)
-        ttk.Button(file_frame, text="选择文件", command=self._pick_file).pack(side="left")
-        ttk.Button(file_frame, text="选择目录(批量)", command=self._pick_dir).pack(
-            side="left", padx=(8, 0))
+        ttk.Button(file_frame, text="选择文件",
+                   command=self._pick_file).pack(side="left")
+        ttk.Button(file_frame, text="选择目录(批量)",
+                   command=self._pick_dir).pack(side="left", padx=(8, 0))
         ttk.Label(file_frame, textvariable=self.path_var,
                   style="Muted.TLabel").pack(side="left", padx=12)
 
-        strat_frame = ttk.Frame(self)
+        strat_frame = ttk.Frame(self._inner)
         strat_frame.pack(fill="x", padx=16, pady=8)
         ttk.Label(strat_frame, text="脱敏策略：").pack(side="left")
         for text, val in [("掩码保留首尾", "mask"), ("Hash关联", "hash"),
@@ -96,16 +122,18 @@ class LogDesensitizerApp(tk.Tk):
             ttk.Radiobutton(strat_frame, text=text, variable=self.strategy_var,
                             value=val).pack(side="left", padx=(8, 0))
 
-        custom_frame = ttk.Frame(self)
+        custom_frame = ttk.Frame(self._inner)
         custom_frame.pack(fill="x", padx=16, pady=8)
         ttk.Label(custom_frame, text="自定义规则(JSON，可选)：").pack(side="left")
         ttk.Button(custom_frame, text="选择规则文件",
                    command=self._pick_custom).pack(side="left", padx=(8, 0))
-        self.custom_label = ttk.Label(custom_frame, text="无", style="Muted.TLabel")
+        self.custom_label = ttk.Label(custom_frame, text="无",
+                                      style="Muted.TLabel")
         self.custom_label.pack(side="left", padx=12)
 
-        ttk.Label(self, text="内置规则（可勾选/取消）：").pack(anchor="w", padx=16, pady=(8, 4))
-        rules_frame = ttk.Frame(self)
+        ttk.Label(self._inner, text="内置规则（可勾选/取消）：").pack(
+            anchor="w", padx=16, pady=(8, 4))
+        rules_frame = ttk.Frame(self._inner)
         rules_frame.pack(fill="x", padx=16)
         ids = rule_ids()
         for i, rid in enumerate(ids):
@@ -116,31 +144,42 @@ class LogDesensitizerApp(tk.Tk):
         for c in range(4):
             rules_frame.columnconfigure(c, weight=1)
 
-        btn_frame = ttk.Frame(self)
+        btn_frame = ttk.Frame(self._inner)
         btn_frame.pack(fill="x", pady=(12, 4))
         ttk.Button(btn_frame, text="扫描敏感信息",
                    command=self._scan).pack(side="left", padx=16)
         ttk.Button(btn_frame, text="一键脱敏", style="Accent.TButton",
                    command=self._mask).pack(side="left")
 
-        ttk.Label(self, text="命中清单：").pack(anchor="w", padx=16, pady=(8, 2))
-        tree_frame = ttk.Frame(self)
-        tree_frame.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+        ttk.Label(self._inner, text="命中清单：").pack(
+            anchor="w", padx=16, pady=(8, 2))
+        tree_frame = ttk.Frame(self._inner)
+        tree_frame.pack(fill="x", padx=16, pady=(0, 8))
         self.tree = ttk.Treeview(tree_frame, columns=("rule", "count"),
                                 show="headings", height=10)
         self.tree.heading("rule", text="规则")
         self.tree.heading("count", text="命中数")
         self.tree.column("rule", width=260)
         self.tree.column("count", width=120)
-        vsb = ttk.Scrollbar(tree_frame, orient="vertical",
-                            command=self.tree.yview)
-        self.tree.configure(yscrollcommand=vsb.set)
-        vsb.pack(side="right", fill="y")
+        tree_vsb = ttk.Scrollbar(tree_frame, orient="vertical",
+                                 command=self.tree.yview)
+        self.tree.configure(yscrollcommand=tree_vsb.set)
+        tree_vsb.pack(side="right", fill="y")
         self.tree.pack(side="left", fill="both", expand=True)
 
         self.status_var = tk.StringVar(value="就绪")
-        ttk.Label(self, textvariable=self.status_var,
+        ttk.Label(self._inner, textvariable=self.status_var,
                   style="Muted.TLabel").pack(anchor="w", padx=16, pady=(0, 12))
+
+    def _on_wheel(self, event):
+        delta = -1 if event.delta > 0 else 1
+        self._canvas.yview_scroll(delta, "units")
+
+    def _bind_wheel(self, _event):
+        self._canvas.bind_all("<MouseWheel>", self._on_wheel)
+
+    def _unbind_wheel(self, _event):
+        self._canvas.unbind_all("<MouseWheel>")
 
     # ---------- 事件 ----------
     def _pick_file(self):
