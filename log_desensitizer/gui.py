@@ -124,13 +124,19 @@ class LogDesensitizerApp(tk.Tk):
                    command=self._mask).pack(side="left")
 
         ttk.Label(self, text="命中清单：").pack(anchor="w", padx=16, pady=(8, 2))
-        self.tree = ttk.Treeview(self, columns=("rule", "count"),
-                                 show="headings", height=10)
+        tree_frame = ttk.Frame(self)
+        tree_frame.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+        self.tree = ttk.Treeview(tree_frame, columns=("rule", "count"),
+                                show="headings", height=10)
         self.tree.heading("rule", text="规则")
         self.tree.heading("count", text="命中数")
         self.tree.column("rule", width=260)
         self.tree.column("count", width=120)
-        self.tree.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+        vsb = ttk.Scrollbar(tree_frame, orient="vertical",
+                            command=self.tree.yview)
+        self.tree.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        self.tree.pack(side="left", fill="both", expand=True)
 
         self.status_var = tk.StringVar(value="就绪")
         ttk.Label(self, textvariable=self.status_var,
