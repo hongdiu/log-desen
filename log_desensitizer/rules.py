@@ -16,6 +16,36 @@ from typing import List, Optional
 from .engine import Rule
 
 
+# ---------- 姓氏与字段字典（用于中文姓名候选去误报） ----------
+
+# 中国常见姓氏前约 150 个（按常见度），用于中文姓名候选的 value 首字校验。
+# 非此列表开头的 2-4 字中文（如 进行、流水、微信、北京、上海、PDF）自动排除。
+_COMMON_SURNAMES = set(
+    "王李张刘陈杨黄赵周吴徐孙朱马胡郭林何高梁郑罗宋谢唐韩曹许邓萧冯曾"
+    "程蔡彭潘袁于董余苏叶吕魏蒋田杜丁沈姜范江傅钟卢汪戴崔任陆廖姚方"
+    "金邱夏谭韦贾邹石熊孟秦阎薛侯雷白龙段郝孔邵史毛常万顾赖武康贺严"
+    "尹钱施牛洪龚庞樊兰殷施陶翟安颜倪严郭梅盛林童卓凌欧麦欧阳慕容上官"
+    "司徒诸葛端木令狐皇甫宇文尉迟公孙轩辕百里"
+)
+
+def _ch_name_value_ok(s: str) -> bool:
+    """中文姓名值校验：非空且首字为常见姓氏。
+
+    用于 ch_name 候选规则的 validator，过滤：
+    - 进行/开始/完成（首字非姓氏）
+    - 流水/报告/微信/支付/明细（首字非姓氏）
+    - 江西/上海/北京（江/上/北非姓氏 → 排除；'北' 虽在罕见姓氏但
+      出现在北京时仍可能误报，由用户人工兜底取消）
+    """
+    if not s:
+        return False
+    if len(s) < 2 or len(s) > 4:
+        return False
+    if not all("\u4e00" <= ch <= "\u9fa5" for ch in s):
+        return False
+    return s[0] in _COMMON_SURNAMES
+
+
 # ---------- 校验函数（降低误报） ----------
 
 def luhn_ok(s: str) -> bool:
@@ -124,17 +154,20 @@ _RULE_DEFINITIONS: List[Rule] = [
         pattern=r"(?i)(?<![\w])(" + _SENSITIVE_KEYS + r")\s*[=:]\s*(\"[^\"]*\"|'[^']*'|[^\s&;\"'\x00-\x1f]+)",
         replace_group=2,
     ),
-    # 中文姓名候选：动态扫描所有「key 分隔符 中文值」形式（不限字段名）。
-    # group(1)=key（英文标识符或1-8字中文），group(2)=2-4字中文值。
+    # 中文姓名候选：动态扫描所有「key 分隔符 中文值」形式（不限字段名/不限服务）。
+    # group(1)=key（英文标识符或1-8字中文，通用，不做白名单限制），
+    # group(2)=2-4字中文值（validator 校验首字为常见姓氏）。
     # 形式不限：userName: '张三' / user=张三 / 联系人：王五 / name="李四" 均可。
-    # 会匹配非姓名 key（如 status: 成功）；靠「确认后脱敏」模式由用户根据
-    # 日志原文样本判断哪些 key 是姓名字段后勾选，人工兜底误报。
+    # 去误报两重天：
+    #   1) validator 首字姓氏过滤：自动排除 进行/流水/微信/支付/成功 等非姓氏开头
+    #   2) 用户人工兜底：如 江西(江=姓氏)、流水(流=姓氏) 等边界 case 看样例取消
     # field_group=1 用 key 名作为字段标识去重，确认后该 key 下所有值脱敏。
     Rule(
         id="ch_name",
         pattern=r"([A-Za-z_][A-Za-z0-9_]*|[\u4e00-\u9fa5]{1,8})\s*[:：=]\s*['\"]?([\u4e00-\u9fa5]{2,4})['\"]?",
         replace_group=2,
         field_group=1,
+        validator=_ch_name_value_ok,
     ),
 ]
 
