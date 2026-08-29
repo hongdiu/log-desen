@@ -63,8 +63,8 @@ _RULE_HELP_TEXT = """自定义规则 JSON 格式说明
 - 自定义规则会追加到内置规则之后执行。
 - 命中后按当前选择的脱敏策略（掩码/Hash/彻底替换）处理。
 - 自定义规则默认启用，无需在内置规则勾选区勾选。
-- 字符串替换功能（GUI 上方"字符串替换"区）与正则规则相互独立，
-  字符串替换在所有正则规则之后整体替换，适合精确关键词/敏感词替换。
+- 敏感词替换（GUI 上方"敏感词替换"区）与正则规则相互独立，
+  在所有正则规则之后整体替换，适合精确关键词/敏感词替换。
 """
 
 
@@ -177,10 +177,10 @@ class LogDesensitizerApp(tk.Tk):
                                       style="Muted.TLabel")
         self.custom_label.pack(side="left", padx=12)
 
-        # 自定义字符串全局替换：用户指定"查找→替换为"对
+        # 自定义敏感词全局替换：用户指定"查找→替换为"对
         repl_frame = ttk.Frame(self._inner)
         repl_frame.pack(fill="x", padx=16, pady=8)
-        ttk.Label(repl_frame, text="字符串替换：").pack(side="left")
+        ttk.Label(repl_frame, text="敏感词替换：").pack(side="left")
         ttk.Label(repl_frame, text="查找", style="Muted.TLabel").pack(
             side="left", padx=(8, 4))
         self.repl_find_var = tk.StringVar()

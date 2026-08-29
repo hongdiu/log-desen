@@ -68,10 +68,12 @@ def ipv4_ok(s: str) -> bool:
 # ---------- 内置规则定义 ----------
 
 # key=value 形式的敏感键名（只脱敏 value，保留键名）
+# 按 key 长度降序排列：避免短前缀（如 pwd/auth）先尝试失败再回溯，
+# 长前缀（如 refresh_token）优先匹配，减少 secret_kv 在大日志上的回溯开销。
 _SENSITIVE_KEYS = (
-    "password|passwd|pwd|token|secret|api_key|apikey|access_key|accesskey|"
-    "client_secret|authorization|auth|credential|private_key|session_key|"
-    "refresh_token|access_token|appsecret|app_secret"
+    "refresh_token|client_secret|authorization|access_token|private_key|"
+    "session_key|access_key|app_secret|credential|appsecret|accesskey|"
+    "password|api_key|apikey|passwd|secret|token|auth|pwd"
 )
 
 # 注：private_key 规则按行处理时无法匹配跨行的 PEM 块，
@@ -115,9 +117,11 @@ _RULE_DEFINITIONS: List[Rule] = [
     # Azure 连接串 AccountKey=...，只脱敏值（第 1 组）
     Rule(id="azure_key", pattern=r"AccountKey=([^&\s\"']+)", replace_group=1),
     # 通用 key=value 敏感键，只脱敏 value（第 2 组）
+    # 左边界用 (?<![\w]) 替代 \b，更精确；值部分排除引号与控制字符，
+    # 减少贪婪回溯（大日志性能关键）。
     Rule(
         id="secret_kv",
-        pattern=r"(?i)\b(" + _SENSITIVE_KEYS + r")\s*[=:]\s*(\"[^\"]*\"|'[^']*'|[^\s&;]+)",
+        pattern=r"(?i)(?<![\w])(" + _SENSITIVE_KEYS + r")\s*[=:]\s*(\"[^\"]*\"|'[^']*'|[^\s&;\"'\x00-\x1f]+)",
         replace_group=2,
     ),
 ]

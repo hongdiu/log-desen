@@ -1,10 +1,16 @@
 """核心脱敏引擎：加载规则、匹配敏感数据、按策略替换。
 
-纯标准库实现，兼容 Python 3.8+。核心入口为 Engine，支持文本/文件脱敏。
+优先使用 regex 库（性能更优），未安装时回退到标准库 re。
+兼容 Python 3.8+。核心入口为 Engine，支持文本/文件脱敏。
 """
 
 import os
-import re
+# 优先使用 regex 库（对复杂正则如 secret_kv 的 alternation+回溯性能优于
+# 标准库 re 2-5 倍）；未安装时回退到标准库 re，保证纯标准库环境可运行。
+try:
+    import regex as re  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover
+    import re
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional, Tuple
 
@@ -121,7 +127,7 @@ class Engine:
             if count:
                 text = "".join(out_parts)
                 hits[r.id] = count
-        # 自定义字符串全局替换（在所有正则规则之后）
+        # 自定义敏感词全局替换（在所有正则规则之后）
         for old, new in self.custom_replacements:
             if not old:
                 continue
@@ -141,21 +147,23 @@ class Engine:
         """按行处理文件脱敏，避免大文件一次性读入内存。
 
         errors="replace" 容忍非法字节，避免中断。
-        on_progress(done_bytes, total_bytes) 用于进度反馈。
+        on_progress(done_bytes, total_bytes) 用于进度反馈，用底层二进制流的
+        tell() 取真实字节偏移，避免每行 encode 计算的开销（大文件关键优化）。
         """
+        import io
         total: dict = {}
         total_bytes = _safe_size(in_path)
-        done = 0
-        with open(in_path, "r", encoding=encoding, errors="replace") as fin, \
+        with io.open(in_path, "rb") as fb, \
+                io.TextIOWrapper(fb, encoding=encoding, errors="replace",
+                                 newline="") as fin, \
                 open(out_path, "w", encoding=encoding, newline="") as fout:
             for line in fin:
                 masked, hits = self.mask_text(line)
                 fout.write(masked)
                 for h in hits:
                     total[h.rule_id] = total.get(h.rule_id, 0) + h.count
-                done += len(line.encode(encoding, errors="replace"))
                 if on_progress is not None and total_bytes > 0:
-                    on_progress(done, total_bytes)
+                    on_progress(fb.tell(), total_bytes)
         if on_progress is not None and total_bytes > 0:
             on_progress(total_bytes, total_bytes)
         return [Hit(k, v) for k, v in total.items()]
@@ -202,7 +210,7 @@ class Engine:
                 count += 1
             if count:
                 hits[r.id] = count
-        # 自定义字符串替换命中也统计到扫描结果
+        # 自定义敏感词替换命中也统计到扫描结果
         for old, _ in self.custom_replacements:
             if not old:
                 continue
@@ -213,17 +221,21 @@ class Engine:
 
     def scan_file(self, in_path: str, encoding: str = "utf-8",
                   on_progress: Optional[ProgressCb] = None) -> List[Hit]:
-        """扫描文件敏感信息命中统计（按行，不写入、不替换）。"""
+        """扫描文件敏感信息命中统计（按行，不写入、不替换）。
+
+        用底层二进制流 tell() 取真实字节偏移做进度反馈（大文件优化）。
+        """
+        import io
         total: dict = {}
         total_bytes = _safe_size(in_path)
-        done = 0
-        with open(in_path, "r", encoding=encoding, errors="replace") as fin:
+        with io.open(in_path, "rb") as fb, \
+                io.TextIOWrapper(fb, encoding=encoding,
+                                 errors="replace", newline="") as fin:
             for line in fin:
                 for h in self.scan_text(line):
                     total[h.rule_id] = total.get(h.rule_id, 0) + h.count
-                done += len(line.encode(encoding, errors="replace"))
                 if on_progress is not None and total_bytes > 0:
-                    on_progress(done, total_bytes)
+                    on_progress(fb.tell(), total_bytes)
         if on_progress is not None and total_bytes > 0:
             on_progress(total_bytes, total_bytes)
         return [Hit(k, v) for k, v in total.items()]

@@ -36,7 +36,10 @@ jobs:
         # __main__.py 已做兼容处理，这里走 script 入口更简单稳健（PyInstaller 各版本都支持）。
         # --paths . 确保 log_desensitizer 包可被搜索到；__main__.py 内部在 relative import 失败
         # 时会自动退化为绝对导入，因此 "No known parent package" 场景也能正常启动。
-        run: pyinstaller --noconfirm --onefile --windowed --name log-desensitizer --collect-all log_desensitizer --paths . log_desensitizer\__main__.py
+        # --collect-all regex 确保第三方 regex 库（含 C 扩展）打入 exe；
+        # engine.py 顶部 try import regex as re，未安装时回退到标准库 re，
+        # 但打包时应包含 regex 以获得性能优势。
+        run: pyinstaller --noconfirm --onefile --windowed --name log-desensitizer --collect-all log_desensitizer --collect-all regex --paths . log_desensitizer\__main__.py
       - uses: actions/upload-artifact@v4
         with:
           name: log-desensitizer-windows
