@@ -68,6 +68,121 @@ _RULE_HELP_TEXT = """自定义规则 JSON 格式说明
 """
 
 
+class _ConfirmDialog(tk.Toplevel):
+    """字段级确认弹窗：展示日志原文样本，用户勾选要脱敏的字段。
+
+    点击「勾选」列切换状态；看「日志原文样本」判断字段真伪，
+    样本是地名/项目名则取消勾选。默认全勾，仅需取消误报项。
+    """
+
+    def __init__(self, master, candidates):
+        super().__init__(master)
+        self.title("确认脱敏字段")
+        self.geometry("960x560")
+        self.transient(master)
+        self.grab_set()
+        self._confirmed = None
+        # field_key -> BooleanVar，默认全勾选（仅需取消误报项）
+        self._checks = {
+            c.field_key: tk.BooleanVar(value=True) for c in candidates
+        }
+
+        ttk.Label(
+            self,
+            text="勾选要脱敏的字段（看「日志原文样本」判断字段真伪，"
+                 "样本是地名/项目名则取消勾选）",
+            style="Muted.TLabel",
+        ).pack(anchor="w", padx=12, pady=(10, 6))
+
+        tree_frame = ttk.Frame(self)
+        tree_frame.pack(fill="both", expand=True, padx=12, pady=(0, 8))
+        cols = ("check", "rule", "field", "samples", "count")
+        self.tree = ttk.Treeview(
+            tree_frame, columns=cols, show="headings", height=22)
+        self.tree.heading("check", text="勾选")
+        self.tree.heading("rule", text="规则")
+        self.tree.heading("field", text="字段")
+        self.tree.heading("samples", text="日志原文样本（前3条）")
+        self.tree.heading("count", text="命中数")
+        self.tree.column("check", width=50, anchor="center", stretch=False)
+        self.tree.column("rule", width=100, stretch=False)
+        self.tree.column("field", width=140, stretch=False)
+        self.tree.column("samples", width=520)
+        self.tree.column("count", width=80, anchor="e", stretch=False)
+        vsb = ttk.Scrollbar(tree_frame, orient="vertical",
+                            command=self.tree.yview)
+        self.tree.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        self.tree.pack(side="left", fill="both", expand=True)
+        # 点击/双击「勾选」列切换状态
+        self.tree.bind("<Button-1>", self._on_click)
+        self.tree.bind("<Double-1>", self._on_click)
+
+        for c in candidates:
+            samples_str = " | ".join(c.samples[:3]) if c.samples else ""
+            if len(samples_str) > 100:
+                samples_str = samples_str[:100] + "…"
+            checked = "☑" if self._checks[c.field_key].get() else "☐"
+            self.tree.insert(
+                "", "end", iid=c.field_key,
+                values=(checked, c.rule_id, c.field_label, samples_str, c.count))
+
+        btn_frame = ttk.Frame(self)
+        btn_frame.pack(fill="x", padx=12, pady=(0, 12))
+        ttk.Button(btn_frame, text="全选",
+                   command=lambda: self._set_all(True)).pack(side="left")
+        ttk.Button(btn_frame, text="全不选",
+                   command=lambda: self._set_all(False)).pack(
+                       side="left", padx=(8, 0))
+        self._info_label = ttk.Label(btn_frame, text="", style="Muted.TLabel")
+        self._info_label.pack(side="left", padx=(16, 0))
+        ttk.Button(btn_frame, text="取消",
+                   command=self._cancel).pack(side="right")
+        ttk.Button(btn_frame, text="开始脱敏", style="Accent.TButton",
+                   command=self._ok).pack(side="right", padx=(0, 8))
+        self._update_info()
+
+    def _on_click(self, event):
+        col = self.tree.identify_column(event.x)
+        if col != "#1":  # 只响应勾选列
+            return
+        iid = self.tree.identify_row(event.y)
+        if not iid:
+            return
+        cur = self._checks[iid].get()
+        self._checks[iid].set(not cur)
+        self._refresh_row(iid)
+        self._update_info()
+
+    def _refresh_row(self, iid):
+        vals = list(self.tree.item(iid, "values"))
+        vals[0] = "☑" if self._checks[iid].get() else "☐"
+        self.tree.item(iid, values=vals)
+
+    def _set_all(self, val):
+        for k, v in self._checks.items():
+            v.set(val)
+        for iid in self.tree.get_children():
+            self._refresh_row(iid)
+        self._update_info()
+
+    def _update_info(self):
+        n = sum(1 for v in self._checks.values() if v.get())
+        total = len(self._checks)
+        self._info_label.config(text="已勾选 {0}/{1} 个字段".format(n, total))
+
+    def _ok(self):
+        self._confirmed = {k for k, v in self._checks.items() if v.get()}
+        self.destroy()
+
+    def _cancel(self):
+        self._confirmed = None
+        self.destroy()
+
+    def get_confirmed(self):
+        return self._confirmed
+
+
 class LogDesensitizerApp(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -218,6 +333,8 @@ class LogDesensitizerApp(tk.Tk):
                    command=self._scan).pack(side="left", padx=16)
         ttk.Button(btn_frame, text="一键脱敏", style="Accent.TButton",
                    command=self._mask).pack(side="left")
+        ttk.Button(btn_frame, text="确认后脱敏",
+                   command=self._confirm_mask).pack(side="left", padx=(8, 0))
 
         ttk.Label(self._inner, text="命中清单：").pack(
             anchor="w", padx=16, pady=(8, 2))
@@ -412,6 +529,74 @@ class LogDesensitizerApp(tk.Tk):
             self.after(0, lambda: messagebox.showinfo("完成", "已输出到：\n" + out))
 
         self._run_async(task, "脱敏完成 → " + getattr(self, "_out_path", ""))
+
+    def _confirm_mask(self):
+        """确认后脱敏：扫描字段候选 → 弹窗确认 → 按勾选字段脱敏。
+
+        流程：阶段1 扫描字段候选（按字段去重，每条含日志原文样本）→
+        阶段2 弹 _ConfirmDialog 让用户看样本勾选字段 →
+        阶段3 按确认字段集合调用 mask_with_fields 脱敏。
+        """
+        if not self.current_path:
+            messagebox.showinfo("提示", "请先选择文件")
+            return
+        if self.path_type == "dir":
+            messagebox.showinfo("提示", "确认后脱敏暂仅支持单文件")
+            return
+        eng = self._engine()
+        path = self.current_path
+        self.status_var.set("扫描字段中…")
+        self.progress["value"] = 0
+
+        def scan_worker():
+            try:
+                candidates = eng.scan_field_candidates(
+                    path,
+                    on_progress=lambda c, t: self.after(
+                        0, lambda c=c, t=t: self._set_progress(c, t)))
+            except Exception as e:  # noqa: BLE001
+                self.after(0, lambda: messagebox.showerror("出错", str(e)))
+                self.after(0, lambda: self.status_var.set("出错"))
+                return
+            self.after(0, lambda: self._after_scan(candidates, eng, path))
+
+        threading.Thread(target=scan_worker, daemon=True).start()
+
+    def _after_scan(self, candidates, eng, path):
+        """扫描完成后：弹确认窗，等用户勾选，再启动脱敏 worker。"""
+        if not candidates:
+            self.status_var.set("未发现可脱敏字段")
+            messagebox.showinfo("提示", "未发现可脱敏字段")
+            return
+        self.status_var.set("等待确认…")
+        dlg = _ConfirmDialog(self, candidates)
+        self.wait_window(dlg)
+        confirmed = dlg.get_confirmed()
+        if not confirmed:
+            self.status_var.set("已取消")
+            return
+        self.status_var.set("脱敏中…")
+        self.progress["value"] = 0
+
+        def mask_worker():
+            try:
+                base, ext = os.path.splitext(path)
+                out = base + ".masked" + ext
+                hits = eng.mask_with_fields(
+                    path, out, confirmed,
+                    on_progress=lambda c, t: self.after(
+                        0, lambda c=c, t=t: self._set_progress(c, t)))
+                self._out_path = out
+                self.after(0, lambda: self._show_hits(hits))
+                self.after(0, lambda: self.status_var.set(
+                    "脱敏完成 → " + out))
+                self.after(0, lambda: messagebox.showinfo(
+                    "完成", "已输出到：\n" + out))
+            except Exception as e:  # noqa: BLE001
+                self.after(0, lambda: messagebox.showerror("出错", str(e)))
+                self.after(0, lambda: self.status_var.set("出错"))
+
+        threading.Thread(target=mask_worker, daemon=True).start()
 
     def _show_hits(self, hits):
         for it in self.tree.get_children():

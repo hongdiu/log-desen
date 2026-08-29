@@ -61,6 +61,24 @@ class Hit:
     count: int = 0
 
 
+@dataclass
+class FieldCandidate:
+    """字段级脱敏候选（用于「确认后脱敏」模式）。
+
+    - rule_id       所属规则 id
+    - field_key     归一化字段标识（去空白后的字段模式，或规则名），用于去重与确认集合
+    - field_label   展示用字段标签（保留原样分隔符的原文片段，或规则名）
+    - samples       前 5 个日志原文上下文片段（匹配前后各 15 字），帮用户判断字段真伪
+    - count         该字段下总命中次数
+    """
+
+    rule_id: str
+    field_key: str
+    field_label: str
+    samples: List[str] = field(default_factory=list)
+    count: int = 0
+
+
 class Engine:
     """脱敏引擎。
 
@@ -239,3 +257,177 @@ class Engine:
         if on_progress is not None and total_bytes > 0:
             on_progress(total_bytes, total_bytes)
         return [Hit(k, v) for k, v in total.items()]
+
+    # ---------- 字段级确认脱敏 ----------
+
+    def _field_key(self, r: Rule, m) -> str:
+        """从匹配中提取归一化字段标识（去空白）。
+
+        replace_group>0 时取值之前的原文片段（如 user=），整体脱敏规则用规则名。
+        """
+        if r.replace_group and r.replace_group <= m.re.groups:
+            g = r.replace_group
+            prefix = m.group(0)[: m.start(g) - m.start(0)]
+        else:
+            prefix = r.id
+        return re.sub(r"\s", "", prefix)
+
+    def _field_label(self, r: Rule, m) -> str:
+        """展示用字段标签（保留原样分隔符）。"""
+        if r.replace_group and r.replace_group <= m.re.groups:
+            g = r.replace_group
+            return m.group(0)[: m.start(g) - m.start(0)].strip()
+        return r.id
+
+    def scan_field_candidates(
+        self,
+        in_path: str,
+        encoding: str = "utf-8",
+        on_progress: Optional[ProgressCb] = None,
+    ) -> List["FieldCandidate"]:
+        """扫描文件，按 (规则, 字段) 去重生成字段级候选清单。
+
+        每个不同字段模式（如 user=、联系人:）生成一条候选，
+        含前 5 个日志原文上下文样本与总命中次数。
+        用于「确认后脱敏」模式：用户查看样本判断字段真伪后勾选。
+        """
+        import io
+        agg: dict = {}
+        total_bytes = _safe_size(in_path)
+        with io.open(in_path, "rb") as fb, \
+                io.TextIOWrapper(fb, encoding=encoding,
+                                 errors="replace", newline="") as fin:
+            for line in fin:
+                for r in self.rules:
+                    # 整体脱敏规则（replace_group=0，如 phone/idcard）不参与
+                    # 字段确认：它们无字段概念、误报率低，照常脱敏即可。
+                    if not (r.replace_group and r.replace_group > 0):
+                        continue
+                    pat = r.compile()
+                    for m in pat.finditer(line):
+                        g = r.replace_group
+                        if g and g <= m.re.groups:
+                            matched_val = m.group(g)
+                        else:
+                            matched_val = m.group(0)
+                        if r.validator is not None and not r.validator(matched_val):
+                            continue
+                        fkey = self._field_key(r, m)
+                        flabel = self._field_label(r, m)
+                        agg_key = (r.id, fkey)
+                        if agg_key not in agg:
+                            agg[agg_key] = {
+                                "rule_id": r.id,
+                                "field_key": fkey,
+                                "field_label": flabel,
+                                "samples": [],
+                                "count": 0,
+                            }
+                        entry = agg[agg_key]
+                        entry["count"] += 1
+                        if len(entry["samples"]) < 5:
+                            ctx_start = max(0, m.start(0) - 15)
+                            ctx_end = min(len(line), m.end(0) + 15)
+                            entry["samples"].append(
+                                line[ctx_start:ctx_end].strip())
+                if on_progress is not None and total_bytes > 0:
+                    on_progress(fb.tell(), total_bytes)
+        if on_progress is not None and total_bytes > 0:
+            on_progress(total_bytes, total_bytes)
+        return [
+            FieldCandidate(
+                rule_id=e["rule_id"],
+                field_key=e["field_key"],
+                field_label=e["field_label"],
+                samples=e["samples"],
+                count=e["count"],
+            )
+            for e in agg.values()
+        ]
+
+    def mask_with_fields(
+        self,
+        in_path: str,
+        out_path: str,
+        confirmed_field_keys,
+        encoding: str = "utf-8",
+        on_progress: Optional[ProgressCb] = None,
+    ) -> List[Hit]:
+        """按确认字段集合脱敏文件。
+
+        confirmed_field_keys 为字段标识集合（scan_field_candidates 返回的
+        field_key），只脱敏集合内字段下的匹配，未确认字段保留原值。
+        自定义敏感词替换不受字段确认影响，始终执行。
+        """
+        import io
+        total: dict = {}
+        total_bytes = _safe_size(in_path)
+        with io.open(in_path, "rb") as fb, \
+                io.TextIOWrapper(fb, encoding=encoding, errors="replace",
+                                 newline="") as fin, \
+                open(out_path, "w", encoding=encoding, newline="") as fout:
+            for line in fin:
+                masked, hits = self._mask_text_with_fields(
+                    line, confirmed_field_keys)
+                fout.write(masked)
+                for h in hits:
+                    total[h.rule_id] = total.get(h.rule_id, 0) + h.count
+                if on_progress is not None and total_bytes > 0:
+                    on_progress(fb.tell(), total_bytes)
+        if on_progress is not None and total_bytes > 0:
+            on_progress(total_bytes, total_bytes)
+        return [Hit(k, v) for k, v in total.items()]
+
+    def _mask_text_with_fields(self, text: str, confirmed_field_keys):
+        """按确认字段集合脱敏一段文本。
+
+        confirmed_field_keys 为 None 时等同 mask_text（全脱敏）。
+        未确认字段保留原值（不拼接、不更新 last，自然保留）。
+        自定义敏感词替换始终执行，不受字段确认影响。
+        """
+        hits = {r.id: 0 for r in self.rules}
+        for r in self.rules:
+            pat = r.compile()
+            strat = self._rule_strategy(r)
+            out_parts: List[str] = []
+            last = 0
+            count = 0
+            for m in pat.finditer(text):
+                start, end = m.start(), m.end()
+                # 字段确认：仅对有字段的规则（replace_group>0）生效；
+                # 整体脱敏规则（phone/idcard 等）无字段概念，照常脱敏。
+                if (confirmed_field_keys is not None
+                        and r.replace_group and r.replace_group <= m.re.groups):
+                    fkey = self._field_key(r, m)
+                    if fkey not in confirmed_field_keys:
+                        continue
+                if r.replace_group and r.replace_group <= m.re.groups:
+                    g = r.replace_group
+                    matched = m.group(g)
+                    if r.validator is not None and not r.validator(matched):
+                        continue
+                    v_start, v_end = m.start(g), m.end(g)
+                    out_parts.append(text[last:v_start])
+                    out_parts.append(strat.apply(matched, r.id))
+                    last = v_end
+                else:
+                    matched = m.group(0)
+                    if r.validator is not None and not r.validator(matched):
+                        continue
+                    out_parts.append(text[last:start])
+                    out_parts.append(strat.apply(matched, r.id))
+                    last = end
+                count += 1
+            out_parts.append(text[last:])
+            if count:
+                text = "".join(out_parts)
+                hits[r.id] = count
+        # 自定义敏感词替换（始终执行，不受字段确认影响）
+        for old, new in self.custom_replacements:
+            if not old:
+                continue
+            n = text.count(old)
+            if n:
+                text = text.replace(old, new)
+                hits["custom_replace"] = hits.get("custom_replace", 0) + n
+        return text, [Hit(k, v) for k, v in hits.items() if v > 0]
