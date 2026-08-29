@@ -29,7 +29,8 @@ def test_idcard_invalid_kept():
 
 def test_bankcard_luhn_masked():
     t, h = _eng().mask_text("card 4111111111111111")
-    assert "4111" in t
+    assert "411" in t            # 前 3 位保留
+    assert "1111" in t           # 后 4 位保留
     assert "4111111111111111" not in t
     assert any(x.rule_id == "bankcard" for x in h)
 
