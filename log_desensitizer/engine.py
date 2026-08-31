@@ -38,6 +38,9 @@ class Rule:
     - field_group  大于 0 时该捕获组作为「字段标识」用于确认脱敏去重（如 ch_name
                    的 key 名 userName），0 表示不参与字段确认（整体脱敏规则照常脱敏）
     - validator  命中后可选校验（如 Luhn、身份证校验位），返回 False 则不脱敏、保留原值
+    - field_validator  字段名合理性校验（仅 field_group>0 生效），参数为提取到的
+                       字段 key，返回 False 则跳过该候选（用于过滤 PR 工单编号/行号
+                       等明显非姓名字段）
     - strategy   单规则专属策略，None 时用引擎全局策略
     """
 
@@ -47,6 +50,7 @@ class Rule:
     replace_group: int = 0
     field_group: int = 0
     validator: Optional[Callable[[str], bool]] = None
+    field_validator: Optional[Callable[[str], bool]] = None
     strategy: Optional[Strategy] = None
     _compiled: Optional["re.Pattern"] = field(default=None, repr=False)
 
@@ -330,6 +334,9 @@ class Engine:
                         if r.validator is not None and not r.validator(matched_val):
                             continue
                         fkey = self._field_key(r, m)
+                        # 字段名合理性校验（如 PR 工单编号/行号 等非姓名字段跳过）
+                        if r.field_validator is not None and not r.field_validator(fkey):
+                            continue
                         flabel = self._field_label(r, m)
                         agg_key = (r.id, fkey)
                         if agg_key not in agg:
@@ -416,6 +423,10 @@ class Engine:
                 if (confirmed_field_keys is not None
                         and r.field_group and r.field_group <= m.re.groups):
                     fkey = self._field_key(r, m)
+                    # 字段名合理性校验 + 必须在用户确认集合内
+                    if (r.field_validator is not None
+                            and not r.field_validator(fkey)):
+                        continue
                     if fkey not in confirmed_field_keys:
                         continue
                 if r.replace_group and r.replace_group <= m.re.groups:

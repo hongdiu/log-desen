@@ -95,11 +95,14 @@ def test_ch_name_not_in_auto_mask(tmp_path):
 
 def test_surname_filter_removes_false_positives(tmp_path):
     """姓氏首字过滤：进行/流水/微信/支付/成功 等非姓氏开头自动排除，
-    PR 单号正则本身不匹配 value(英文/数字) 也不会进候选。"""
+    PR 工单编号 key 被 field_validator 排除。"""
     lines = [
+        # 余=姓氏，余额趋势（4字）→ value通过validator，但key=PRxx(>20位)被排除
+        "PR2093275189059158016: 余额趋势图处理完成，耗时16.96秒\n",
         "PR2093133026094645248: 进行联合账户汇总信息画像表落库\n",
         "流水报告：获取策略引擎结果，流程开启\n",
         "pdf_displayName=微信支付交易明细证明(20250101)\n",
+        "1001.py:126) - 1.流水报告：获取策略引擎结果，流程开启\n",  # 1001/126 数字开头被排除
         "status=成功 level=信息\n",
         "user=张三 createdBy=李四\n",  # 真正的姓名（张/李=姓氏）
     ]
@@ -109,14 +112,48 @@ def test_surname_filter_removes_false_positives(tmp_path):
     cands = eng.scan_field_candidates(str(p))
     ch_cands = [c for c in cands if c.rule_id == "ch_name"]
     labels = {c.field_label for c in ch_cands}
-    # 误报字段不应出现（首字非姓氏或 value 非中文）
-    assert "PR2093133026094645248" not in labels, "PR 单号不应进候选（value=进行, 进✗姓氏）"
+    # PR工单编号（长串 + PR+全数字）：field_validator 直接排除
+    assert "PR2093275189059158016" not in labels, "PR工单编号不应进候选（key过长+PR+数字）"
+    assert "PR2093133026094645248" not in labels, "PR工单编号不应进候选"
+    # 数字开头的行号/文件名：field_validator 排除
+    assert "1001" not in labels, "数字开头的行号应排除"
+    assert "126" not in labels, "纯数字行号应排除"
+    # value首字非姓氏：validator 排除
     assert "pdf_displayName" not in labels, "微信（微✗姓氏）应排除"
     assert "status" not in labels, "成功（成✗姓氏）应排除"
     assert "level" not in labels, "信息（信✗姓氏）应排除"
     # 真正的姓名字段应保留
     assert "user" in labels, "张三（张✓姓氏）应保留"
     assert "createdBy" in labels, "李四（李✓姓氏）应保留"
+
+
+def test_key_filter_edge_cases(tmp_path):
+    """key合理性边界：中文key 1-8字放行；英文≤20字放行；超长key排除。"""
+    lines = [
+        "经办人: 刘德华\n",                       # 中文key=经办人(3字) OK
+        "联合账户汇总画像项目：张三\n",              # 9字中文key 超长→排除
+        "bizHandlerName=王小明\n",                  # 14字英文标识符 OK
+        "u=李四\n",                                 # 1字 OK
+        # 21字超长标识符 → 排除
+        "abcdefghijklmnopqrstu=王五处理完成了哦\n",
+        # 20字刚好 → OK
+        "abcdefghijklmnopqrst=赵六\n",
+        # PR+10位纯数字 → PR工单编号模式，排除
+        "PR2093275189: 余先生\n",
+    ]
+    p = tmp_path / "edge.log"
+    p.write_text("".join(lines), encoding="utf-8")
+    eng = Engine(builtin_rules())
+    cands = eng.scan_field_candidates(str(p))
+    ch_keys = {c.field_key for c in cands if c.rule_id == "ch_name"}
+    assert "经办人" in ch_keys
+    assert "bizHandlerName" in ch_keys
+    assert "u" in ch_keys
+    assert "abcdefghijklmnopqrst" in ch_keys, "20字刚好OK"
+    # 排除的
+    assert "联合账户汇总画像项目" not in ch_keys, "9字中文超长"
+    assert "abcdefghijklmnopqrstu" not in ch_keys, "21字英文超长"
+    assert "PR2093275189" not in ch_keys, "PR+纯数字工单编号"
 
 
 def test_custom_english_key_not_blocked(tmp_path):

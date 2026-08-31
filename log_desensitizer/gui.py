@@ -71,14 +71,15 @@ _RULE_HELP_TEXT = """自定义规则 JSON 格式说明
 class _ConfirmDialog(tk.Toplevel):
     """字段级确认弹窗：展示日志原文样本，用户勾选要脱敏的字段。
 
-    点击「勾选」列切换状态；看「日志原文样本」判断字段真伪，
-    样本是地名/项目名则取消勾选。默认全勾，仅需取消误报项。
+    - 表格中样本截断显示，鼠标悬停任意行会弹出浮动 tooltip 显示该行
+      完整样本（每条一行，最长 150 字），避免列宽不够看不清完整日志；
+    - 点击「勾选」列切换状态；默认全勾，仅需取消误报项。
     """
 
     def __init__(self, master, candidates):
         super().__init__(master)
         self.title("确认脱敏字段")
-        self.geometry("960x560")
+        self.geometry("980x600")
         self.transient(master)
         self.grab_set()
         self._confirmed = None
@@ -86,10 +87,15 @@ class _ConfirmDialog(tk.Toplevel):
         self._checks = {
             c.field_key: tk.BooleanVar(value=True) for c in candidates
         }
+        # hover tooltip 状态
+        self._tip_win: Optional[tk.Toplevel] = None
+        self._tip_row: Optional[str] = None
+        # row(field_key) -> 完整样本列表（tooltip 读取）
+        self._full_samples: dict = {}
 
         ttk.Label(
             self,
-            text="勾选要脱敏的字段（看「日志原文样本」判断字段真伪，"
+            text="勾选要脱敏的字段（「样本」截断显示，鼠标悬停行查看完整日志；"
                  "样本是地名/项目名则取消勾选）",
             style="Muted.TLabel",
         ).pack(anchor="w", padx=12, pady=(10, 6))
@@ -102,12 +108,12 @@ class _ConfirmDialog(tk.Toplevel):
         self.tree.heading("check", text="勾选")
         self.tree.heading("rule", text="规则")
         self.tree.heading("field", text="字段")
-        self.tree.heading("samples", text="日志原文样本（前3条）")
+        self.tree.heading("samples", text="日志原文样本（悬停行看完整）")
         self.tree.heading("count", text="命中数")
         self.tree.column("check", width=50, anchor="center", stretch=False)
-        self.tree.column("rule", width=100, stretch=False)
+        self.tree.column("rule", width=90, stretch=False)
         self.tree.column("field", width=140, stretch=False)
-        self.tree.column("samples", width=520)
+        self.tree.column("samples", width=600)
         self.tree.column("count", width=80, anchor="e", stretch=False)
         vsb = ttk.Scrollbar(tree_frame, orient="vertical",
                             command=self.tree.yview)
@@ -117,15 +123,27 @@ class _ConfirmDialog(tk.Toplevel):
         # 点击/双击「勾选」列切换状态
         self.tree.bind("<Button-1>", self._on_click)
         self.tree.bind("<Double-1>", self._on_click)
+        # 鼠标移动：显示/隐藏 hover tooltip
+        self.tree.bind("<Motion>", self._on_motion)
+        self.tree.bind("<Leave>", self._on_leave)
 
         for c in candidates:
-            samples_str = " | ".join(c.samples[:3]) if c.samples else ""
-            if len(samples_str) > 100:
-                samples_str = samples_str[:100] + "…"
+            # 表格列截断：samples 不超 120 字（避免列撑满后影响其他列）
+            preview = " | ".join(c.samples[:3]) if c.samples else ""
+            if len(preview) > 120:
+                preview = preview[:120] + "…"
             checked = "☑" if self._checks[c.field_key].get() else "☐"
+            # 完整样本存到 item data，供 hover tooltip 读取（3 条 × 150 字）
+            full_samples = [
+                s if len(s) <= 150 else s[:150] + "…"
+                for s in (c.samples or [])[:3]
+            ]
             self.tree.insert(
                 "", "end", iid=c.field_key,
-                values=(checked, c.rule_id, c.field_label, samples_str, c.count))
+                values=(checked, c.rule_id, c.field_label, preview, c.count),
+                tags=(c.rule_id,),
+            )
+            self._full_samples[c.field_key] = full_samples
 
         btn_frame = ttk.Frame(self)
         btn_frame.pack(fill="x", padx=12, pady=(0, 12))
@@ -176,8 +194,82 @@ class _ConfirmDialog(tk.Toplevel):
         self.destroy()
 
     def _cancel(self):
+        self._hide_tip()
         self._confirmed = None
         self.destroy()
+
+    # --------------- hover tooltip：悬停行显示完整样本 ---------------
+    def _on_motion(self, event):
+        rowid = self.tree.identify_row(event.y)
+        if rowid != self._tip_row:
+            self._tip_row = rowid
+            self._hide_tip()
+            if rowid:
+                self._show_tip(event.x_root, event.y_root, rowid)
+
+    def _on_leave(self, _event):
+        self._tip_row = None
+        self._hide_tip()
+
+    def _show_tip(self, x_root: int, y_root: int, rowid: str):
+        samples = self._full_samples.get(rowid) or []
+        if not samples:
+            return
+        # 取字段名与命中数作为标题
+        vals = self.tree.item(rowid, "values")
+        rule = vals[1] if len(vals) > 1 else ""
+        field = vals[2] if len(vals) > 2 else rowid
+        count = vals[4] if len(vals) > 4 else ""
+        title = "规则 {0} | 字段 {1} | 命中数 {2}".format(rule, field, count)
+        # 浮窗：overrideredirect 去掉标题栏，整体 tooltip 风格
+        win = tk.Toplevel(self)
+        win.wm_overrideredirect(True)
+        # 放在鼠标右下方，超出屏幕时自动左移/上移
+        # 估算尺寸：每条样本最多 90 字符（~900px）× 行距 22
+        tw = min(900, max(420, max(
+            (len(s) for s in samples), default=420) * 11))
+        th = 36 + len(samples) * 22 + 8
+        max_w = max(420, win.winfo_screenwidth() - x_root - 30)
+        tw = min(tw, max_w)
+        x = x_root + 14
+        y = y_root + 14
+        sx = win.winfo_screenwidth()
+        sy = win.winfo_screenheight()
+        if x + tw > sx:
+            x = x_root - tw - 14
+        if y + th > sy:
+            y = y_root - th - 14
+        win.wm_geometry("+{0}+{1}".format(x, y))
+        outer = tk.Frame(win, background="#44474F")
+        outer.pack(fill="both", expand=True)
+        inner = tk.Frame(outer, background="#FFFFFF", padx=10, pady=8)
+        inner.pack(fill="both", expand=True, padx=1, pady=1)
+        tk.Label(
+            inner, text=title, anchor="w", justify="left",
+            font=("Microsoft YaHei", 9, "bold"),
+            background="#F5F6F8", foreground="#1F2329",
+            padx=8, pady=4,
+        ).pack(fill="x")
+        sep = tk.Frame(inner, height=1, background="#E5E6EB")
+        sep.pack(fill="x", pady=(6, 6))
+        for i, s in enumerate(samples, 1):
+            tk.Label(
+                inner,
+                text="[{0}] {1}".format(i, s),
+                anchor="w", justify="left",
+                font=("Consolas", 10),
+                background="#FFFFFF", foreground="#1F2329",
+                wraplength=tw - 36,
+            ).pack(anchor="w", pady=1)
+        self._tip_win = win
+
+    def _hide_tip(self):
+        if self._tip_win is not None:
+            try:
+                self._tip_win.destroy()
+            except Exception:
+                pass
+            self._tip_win = None
 
     def get_confirmed(self):
         return self._confirmed

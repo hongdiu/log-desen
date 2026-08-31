@@ -46,6 +46,41 @@ def _ch_name_value_ok(s: str) -> bool:
     return s[0] in _COMMON_SURNAMES
 
 
+def _ch_name_key_ok(key: str) -> bool:
+    """中文姓名候选的「字段名合理性」校验，避免把 PR 工单编号、
+    行号、时间戳、日志里任意冒号分隔符当字段名。
+
+    规则：
+    - 含中文字符的 key：1-8 字中文（联系人/经办人/报障人/用户 等），放行
+    - 英文标识符 key：
+      a) 1 ≤ len ≤ 20（姓名字段不会是 PR2093... 这类 18+ 位长串）
+      b) 必须以英文字母或下划线开头（符合标识符语义）
+      c) 不能是纯数字（行号/时间戳被误抓，如 126）
+      d) 不能是 "PR" + 全数字 的工单编号风格（长度 ≥ 10 的 PRxxxx 模式
+         如 PR20932751890591 直接排除；短 PR 前缀如 procKey/prod 放行）
+    """
+    if not key:
+        return False
+    n = len(key)
+    # 含中文 → 中文名
+    if any("\u4e00" <= ch <= "\u9fa5" for ch in key):
+        # 全中文 1-8 字
+        return 1 <= n <= 8 and all("\u4e00" <= ch <= "\u9fa5" for ch in key)
+    # 英文标识符
+    if n < 1 or n > 20:
+        return False
+    first = key[0]
+    if not (("a" <= first <= "z") or ("A" <= first <= "Z") or first == "_"):
+        return False
+    # 纯数字（不可能，开头已字母/下划线）直接排除其他风险：全数字已过不了
+    # PR + 纯数字 的工单编号：开头 P 第二个 R 其余全数字
+    if n >= 10 and key[0] == "P" and key[1] == "R":
+        rest = key[2:]
+        if rest and all("0" <= c <= "9" for c in rest):
+            return False
+    return True
+
+
 # ---------- 校验函数（降低误报） ----------
 
 def luhn_ok(s: str) -> bool:
@@ -168,6 +203,7 @@ _RULE_DEFINITIONS: List[Rule] = [
         replace_group=2,
         field_group=1,
         validator=_ch_name_value_ok,
+        field_validator=_ch_name_key_ok,
     ),
 ]
 
