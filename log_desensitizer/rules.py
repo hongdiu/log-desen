@@ -14,6 +14,7 @@ import os
 from typing import List, Optional
 
 from .engine import Rule
+from .strategies import NameMaskStrategy
 
 
 # ---------- 姓氏与字段字典（用于中文姓名候选去误报） ----------
@@ -193,17 +194,20 @@ _RULE_DEFINITIONS: List[Rule] = [
     # group(1)=key（英文标识符或1-8字中文，通用，不做白名单限制），
     # group(2)=2-4字中文值（validator 校验首字为常见姓氏）。
     # 形式不限：userName: '张三' / user=张三 / 联系人：王五 / name="李四" 均可。
+    # key 后加 ['\"]? 消费 JSON 格式 key 后的引号（"name": "张三" 才能匹配）。
     # 去误报两重天：
     #   1) validator 首字姓氏过滤：自动排除 进行/流水/微信/支付/成功 等非姓氏开头
     #   2) 用户人工兜底：如 江西(江=姓氏)、流水(流=姓氏) 等边界 case 看样例取消
     # field_group=1 用 key 名作为字段标识去重，确认后该 key 下所有值脱敏。
+    # strategy=NameMaskStrategy：2字保首字(张*)，3字+保首尾(张*三、欧**明)。
     Rule(
         id="ch_name",
-        pattern=r"([A-Za-z_][A-Za-z0-9_]*|[\u4e00-\u9fa5]{1,8})\s*[:：=]\s*['\"]?([\u4e00-\u9fa5]{2,4})['\"]?",
+        pattern=r"([A-Za-z_][A-Za-z0-9_]*|[\u4e00-\u9fa5]{1,8})['\"]?\s*[:：=]\s*['\"]?([\u4e00-\u9fa5]{2,4})['\"]?",
         replace_group=2,
         field_group=1,
         validator=_ch_name_value_ok,
         field_validator=_ch_name_key_ok,
+        strategy=NameMaskStrategy(),
     ),
 ]
 

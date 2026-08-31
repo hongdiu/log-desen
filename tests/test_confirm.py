@@ -156,6 +156,50 @@ def test_key_filter_edge_cases(tmp_path):
     assert "PR2093275189" not in ch_keys, "PR+纯数字工单编号"
 
 
+def test_name_mask_strategy_lengths():
+    """NameMaskStrategy 各字数脱敏：2字保首字，3字+保首尾。"""
+    from log_desensitizer.strategies import NameMaskStrategy
+    s = NameMaskStrategy()
+    assert s.apply("张三", "ch_name") == "张*", "2字保首字尾脱敏"
+    assert s.apply("张小三", "ch_name") == "张*三", "3字保首尾中间1字脱敏"
+    assert s.apply("欧阳小明", "ch_name") == "欧**明", "4字保首尾中间2字脱敏"
+    assert s.apply("诸葛亮", "ch_name") == "诸*亮", "3字"
+    assert s.apply("司马相如", "ch_name") == "司**如", "4字"
+
+
+def test_ch_name_double_quote_json_form(tmp_path):
+    """JSON 双引号格式 "name": "张三" 也能匹配并脱敏（修复 key 后引号未消费 bug）。"""
+    import json
+    lines = [
+        '{"name": "张三", "age": 30}\n',          # JSON 双引号
+        "name='李四' desc=test\n",                 # 单引号
+        'userName: "王小明" done\n',               # key后无引号, 值双引号
+        '联系人："赵六" 处理\n',                    # 中文key + 中文引号
+    ]
+    p = tmp_path / "json.log"
+    p.write_text("".join(lines), encoding="utf-8")
+    eng = Engine(builtin_rules())
+    cands = eng.scan_field_candidates(str(p))
+    ch_keys = {c.field_key for c in cands if c.rule_id == "ch_name"}
+    # JSON 双引号格式应能匹配
+    assert "name" in ch_keys, "JSON双引号格式 name 应匹配"
+    # 其他形式也应匹配
+    assert "userName" in ch_keys
+    assert "联系人" in ch_keys
+
+    # 确认后脱敏，验证 NameMaskStrategy 生效
+    confirmed = {c.field_key for c in cands if c.rule_id == "ch_name"}
+    out = str(tmp_path / "out.log")
+    eng.mask_with_fields(str(p), out, confirmed)
+    content = open(out, encoding="utf-8").read()
+    # 2字名保首字（张三 → 张*）
+    assert "张三" not in content
+    assert "张*" in content
+    # 3字名保首尾（王小明 → 王*明）
+    assert "王小明" not in content
+    assert "王*明" in content
+
+
 def test_custom_english_key_not_blocked(tmp_path):
     """通用工具不限英文 key 名：自定义英文字段（非白名单）只要 value 是姓氏开头
     的 2-4 字中文，就应保留候选。"""

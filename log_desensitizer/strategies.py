@@ -83,5 +83,31 @@ class RedactStrategy(Strategy):
         return "[REDACTED:{0}]".format(rule_id)
 
 
+class NameMaskStrategy(MaskStrategy):
+    """中文姓名专用脱敏：保留首尾各1字，中间脱敏。
+
+    - 2字名：保留首字，尾字脱敏（张三 → 张*），避免姓名直接暴露
+    - 3字名：保留首尾，中间1字脱敏（张小三 → 张*三）
+    - 4字名：保留首尾，中间2字脱敏（欧阳小明 → 欧**明）
+    """
+
+    name = "name_mask"
+
+    def __init__(self):
+        super().__init__(keep_prefix=1, keep_suffix=1, mask_char="*")
+
+    def apply(self, value: str, rule_id: str) -> str:
+        n = len(value)
+        if n == 0:
+            return value
+        if n == 1:
+            return self.mask_char
+        if n == 2:
+            # 2字：保留首字，尾字脱敏（张三 → 张*）
+            return value[0] + self.mask_char
+        # 3字+：保留首尾，中间脱敏（张小三 → 张*三，欧阳小明 → 欧**明）
+        return value[0] + self.mask_char * (n - 2) + value[-1]
+
+
 # 默认策略：掩码保留首尾
 DEFAULT_STRATEGY = MaskStrategy()
