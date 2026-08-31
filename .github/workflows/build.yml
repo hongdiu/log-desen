@@ -45,7 +45,7 @@ jobs:
         # --windowed 不弹黑色命令行窗口；
         # --collect-all regex 确保第三方 regex 库（含 C 扩展）打入；
         # --version-file 加版本信息减少 Defender 误报。
-        run: pyinstaller --noconfirm --onedir --windowed --name log-desensitizer --collect-all log_desensitizer --collect-all regex --paths . --version-file version_info.txt log_desensitizer\__main__.py
+        run: pyinstaller --noconfirm --onedir --windowed --name log-desensitizer --collect-all log_desensitizer --collect-all regex --paths . log_desensitizer\__main__.py
       - uses: actions/upload-artifact@v4
         with:
           name: log-desensitizer-windows
