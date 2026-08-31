@@ -100,11 +100,29 @@ class _ConfirmDialog(tk.Toplevel):
             style="Muted.TLabel",
         ).pack(anchor="w", padx=12, pady=(10, 6))
 
+        # 先 pack 底部按钮区，避免被 expand 的 Treeview 挤出可视区
+        btn_frame = ttk.Frame(self)
+        btn_frame.pack(side="bottom", fill="x", padx=12, pady=(0, 12))
+        ttk.Button(btn_frame, text="全选",
+                   command=lambda: self._set_all(True)).pack(side="left")
+        ttk.Button(btn_frame, text="全不选",
+                   command=lambda: self._set_all(False)).pack(
+                       side="left", padx=(8, 0))
+        self._info_label = ttk.Label(btn_frame, text="", style="Muted.TLabel")
+        self._info_label.pack(side="left", padx=(16, 0))
+        ttk.Button(btn_frame, text="取消",
+                   command=self._cancel).pack(side="right")
+        ttk.Button(btn_frame, text="开始脱敏", style="Accent.TButton",
+                   command=self._ok).pack(side="right", padx=(0, 8))
+        self._update_info()
+
+        # Treeview 占据中间剩余空间（expand=True 吃掉所有剩余高度，
+        # 但因为 btn_frame 已用 side=bottom 先 pack，按钮永远可见）
         tree_frame = ttk.Frame(self)
         tree_frame.pack(fill="both", expand=True, padx=12, pady=(0, 8))
         cols = ("check", "rule", "field", "samples", "count")
         self.tree = ttk.Treeview(
-            tree_frame, columns=cols, show="headings", height=22)
+            tree_frame, columns=cols, show="headings", height=16)
         self.tree.heading("check", text="勾选")
         self.tree.heading("rule", text="规则")
         self.tree.heading("field", text="字段")
@@ -144,21 +162,6 @@ class _ConfirmDialog(tk.Toplevel):
                 tags=(c.rule_id,),
             )
             self._full_samples[c.field_key] = full_samples
-
-        btn_frame = ttk.Frame(self)
-        btn_frame.pack(fill="x", padx=12, pady=(0, 12))
-        ttk.Button(btn_frame, text="全选",
-                   command=lambda: self._set_all(True)).pack(side="left")
-        ttk.Button(btn_frame, text="全不选",
-                   command=lambda: self._set_all(False)).pack(
-                       side="left", padx=(8, 0))
-        self._info_label = ttk.Label(btn_frame, text="", style="Muted.TLabel")
-        self._info_label.pack(side="left", padx=(16, 0))
-        ttk.Button(btn_frame, text="取消",
-                   command=self._cancel).pack(side="right")
-        ttk.Button(btn_frame, text="开始脱敏", style="Accent.TButton",
-                   command=self._ok).pack(side="right", padx=(0, 8))
-        self._update_info()
 
     def _on_click(self, event):
         col = self.tree.identify_column(event.x)
