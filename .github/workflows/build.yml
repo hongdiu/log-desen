@@ -37,38 +37,7 @@ jobs:
       - name: Verify module import works
         shell: pwsh
         run: python -c "from log_desensitizer.gui import LogDesensitizerApp; print('import OK')"
-      - name: Generate version info file
-        shell: pwsh
-        # PyInstaller --version-file 接受 UTF-8 文本，格式为 vsversioninfo
-        # 有版本信息的 exe 被 Defender 信任度更高，减少误报。
-        run: |
-          @'
-VSVersionInfo(
-  ffi=FixedFileInfo(
-    filevers=(1, 0, 0, 0),
-    prodvers=(1, 0, 0, 0),
-    mask=0x3f,
-    flags=0x0,
-    OS=0x40004,
-    fileType=0x1,
-    subtype=0x0,
-    date=(0, 0)
-  ),
-  kids=[
-    StringFileInfo([StringTable('080404B0', [
-      String('CompanyName', 'LogDesensitizer'),
-      String('FileDescription', '日志脱敏工具 - 正则+启发式识别敏感信息'),
-      String('FileVersion', '1.0.0.0'),
-      String('InternalName', 'log-desensitizer'),
-      String('LegalCopyright', 'Copyright 2026'),
-      String('OriginalFilename', 'log-desensitizer.exe'),
-      String('ProductName', 'LogDesensitizer'),
-      String('ProductVersion', '1.0.0.0')
-    ])]),
-    VarFileInfo([Var('Translation', [2052, 1200])])
-  ]
-)
-'@ | Out-File -Encoding utf8 version_info.txt
+      # version_info.txt 已提交到仓库根目录，直接用即可
       - name: Build exe (onedir, no onefile)
         shell: pwsh
         # onedir 模式（默认，去掉 --onefile）生成 dist/log-desensitizer/ 文件夹，
